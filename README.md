@@ -2,7 +2,6 @@
 
 这个目录是给 Llama 3.3 70B 做不同精度推理对比的实验脚手架，目标是后面搬到 Blackwell 机器上跑 NVFP4，同时先把 FP16/FP8/NVFP4 的代码路径和输出格式固定下来。
 
-结论先放前面：如果研究对象是 NVIDIA GPU 上的 LLM inference，尤其是 Blackwell 的 NVFP4，TensorRT-LLM + TensorRT Model Optimizer 是最直接的路线。普通 TensorRT 更偏底层 engine/runtime，LLM 这类多卡、KV cache、paged attention、quantized checkpoint 的工作建议用 TensorRT-LLM。
 
 ## Files
 
