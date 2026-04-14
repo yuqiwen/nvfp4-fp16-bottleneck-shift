@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Benchmark and profiler outputs
+results/
+*.qdrep
+*.nsys-rep
+*.sqlite
+*.ncu-rep
+
+# Local model/data artifacts
+models/
+data/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Local environment
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

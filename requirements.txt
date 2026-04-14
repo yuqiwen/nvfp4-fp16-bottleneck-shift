@@ -1,0 +1,5 @@
+tensorrt-llm
+torch
+transformers
+pyyaml
+pynvml
