@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG=${CONFIG:-configs/llama33_70b_precision_sweep.yaml}
+CONFIG=${CONFIG:-configs/llama31_8b_precision_sweep.yaml}
 PRECISION=${1:-fp16}
 TOOL=${2:-nsys}
 OUT_DIR=${OUT_DIR:-results/nsight}
@@ -30,6 +30,7 @@ case "${WORKLOAD}" in
 esac
 
 mkdir -p "${OUT_DIR}"
+export TLLM_WORKER_USE_SINGLE_PROCESS=${TLLM_WORKER_USE_SINGLE_PROCESS:-1}
 
 BASE_CMD=(
   python scripts/run_precision_sweep.py

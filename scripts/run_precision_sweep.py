@@ -237,6 +237,11 @@ def count_tokens(tokenizer: Any | None, texts: list[str]) -> int:
 
 def build_llm(exp_cfg: dict[str, Any], runtime_cfg: dict[str, Any]) -> tuple[Any, Any]:
     backend = str(runtime_cfg.get("backend", "tensorrt")).lower()
+    if backend == "transformers":
+        return build_transformers_llm(exp_cfg, runtime_cfg)
+
+    if int(runtime_cfg.get("tensor_parallel_size", 1)) == 1:
+        os.environ.setdefault("TLLM_WORKER_USE_SINGLE_PROCESS", "1")
     LLM, SamplingParams, BuildConfig, QuantConfig, QuantAlgo, CalibConfig, KvCacheConfig = get_trtllm_api(backend)
 
     kwargs: dict[str, Any] = {
@@ -247,6 +252,8 @@ def build_llm(exp_cfg: dict[str, Any], runtime_cfg: dict[str, Any]) -> tuple[Any
 
     if runtime_cfg.get("trust_remote_code") is not None:
         kwargs["trust_remote_code"] = bool(runtime_cfg["trust_remote_code"])
+    if runtime_cfg.get("attn_backend") is not None:
+        kwargs["attn_backend"] = str(runtime_cfg["attn_backend"])
 
     build_config = make_build_config(BuildConfig, runtime_cfg)
     quant_config = make_quant_config(QuantConfig, QuantAlgo, exp_cfg)
@@ -263,6 +270,64 @@ def build_llm(exp_cfg: dict[str, Any], runtime_cfg: dict[str, Any]) -> tuple[Any
         kwargs["kv_cache_config"] = kv_cache_config
 
     return LLM(**kwargs), SamplingParams
+
+
+class TransformersSamplingParams:
+    def __init__(self, max_tokens: int, temperature: float = 0.0):
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+
+
+class TransformersLLM:
+    def __init__(self, model: str, dtype: str = "auto", trust_remote_code: bool = True):
+        if torch is None:
+            raise RuntimeError("PyTorch is required for the transformers backend.")
+        transformers = importlib.import_module("transformers")
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model,
+            trust_remote_code=trust_remote_code,
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        torch_dtype = "auto"
+        if dtype in {"float16", "fp16"}:
+            torch_dtype = torch.float16
+        elif dtype in {"bfloat16", "bf16"}:
+            torch_dtype = torch.bfloat16
+
+        self.model = transformers.AutoModelForCausalLM.from_pretrained(
+            model,
+            device_map="auto",
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code,
+        )
+        self.model.eval()
+
+    def generate(self, prompts: list[str], sampling_params: TransformersSamplingParams) -> list[str]:
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {key: value.to(self.model.device) for key, value in inputs.items()}
+        do_sample = sampling_params.temperature > 0
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=sampling_params.max_tokens,
+                do_sample=do_sample,
+                temperature=sampling_params.temperature if do_sample else None,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+        prompt_len = inputs["input_ids"].shape[1]
+        return self.tokenizer.batch_decode(output_ids[:, prompt_len:], skip_special_tokens=True)
+
+
+def build_transformers_llm(exp_cfg: dict[str, Any], runtime_cfg: dict[str, Any]) -> tuple[Any, Any]:
+    dtype = str(runtime_cfg.get("dtype", "auto"))
+    trust_remote_code = bool(runtime_cfg.get("trust_remote_code", True))
+    return TransformersLLM(exp_cfg["model"], dtype=dtype, trust_remote_code=trust_remote_code), TransformersSamplingParams
 
 
 def run_one_batch(

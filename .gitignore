@@ -9,6 +9,7 @@ venv/
 
 # Benchmark and profiler outputs
 results/
+exports/
 *.qdrep
 *.nsys-rep
 *.sqlite
@@ -25,6 +26,7 @@ data/
 # Local environment
 .env
 .env.*
+.remote_patch/
 
 # OS/editor
 .DS_Store

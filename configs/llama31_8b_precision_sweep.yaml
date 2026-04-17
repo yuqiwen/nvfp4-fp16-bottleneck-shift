@@ -1,0 +1,42 @@
+run:
+  output_path: results/llama31_8b_precision_sweep.jsonl
+  warmup_iters: 1
+  timed_iters: 3
+  synthetic_prompt_token_count: 1024
+  max_output_tokens: 256
+  batch_sizes: [1, 2, 4]
+  seed: 1234
+
+runtime:
+  backend: tensorrt
+  tensor_parallel_size: 1
+  pipeline_parallel_size: 1
+  max_batch_size: 1
+  max_num_tokens: 256
+  trust_remote_code: true
+  kv_cache_dtype: null
+  attn_backend: VANILLA
+
+experiments:
+  - name: llama31_8b_fp16
+    precision: fp16
+    enabled: true
+    model: meta-llama/Llama-3.1-8B-Instruct
+    quantization:
+      mode: none
+
+  - name: llama31_8b_fp8
+    precision: fp8
+    enabled: true
+    model: nvidia/Llama-3.1-8B-Instruct-FP8
+    quantization:
+      mode: prequantized
+      kv_cache: fp8
+
+  - name: llama31_8b_nvfp4
+    precision: nvfp4
+    enabled: true
+    model: nvidia/Llama-3.1-8B-Instruct-NVFP4
+    quantization:
+      mode: prequantized
+      kv_cache: null
