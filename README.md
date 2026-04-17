@@ -1,22 +1,23 @@
-# NVFP4 vs FP16 GPU bottleneck shift benchmark
+# NVFP4 vs FP16 GPU Bottleneck Shift Benchmark
 
-这个目录是给 Llama 做不同精度推理对比的实验脚手架，目标是后面搬到 Blackwell/Thor 机器上跑 NVFP4，同时先把 FP16/FP8/NVFP4 的代码路径和输出格式固定下来。当前推荐先用 Llama 3.1 8B 跑通 pipeline，再回到 Llama 3.3 70B。
+This repository contains a profiling scaffold for studying how reduced precision changes GPU bottlenecks during LLM inference. The current working target is Llama 3.1 8B Instruct on NVIDIA Thor/Blackwell-class hardware, with FP16 as the baseline and NVFP4 as the primary low-precision target. Llama 3.3 70B remains a follow-up scale-up target once the pipeline is stable.
 
+## Repository Layout
 
-## Files
-
-- `configs/llama31_8b_precision_sweep.yaml`: 推荐的默认实验配置，适合先在单 GPU 上跑通。
-- `configs/llama33_70b_precision_sweep.yaml`: Llama 3.3 70B 配置，适合后续多卡大显存机器。
-- `scripts/run_precision_sweep.py`: 统一跑 FP16 / FP8 / NVFP4 的 benchmark driver。
-- `requirements.txt`: Python 依赖占位。真正部署时建议优先用 NVIDIA TensorRT-LLM NGC container。
+- `configs/llama31_8b_precision_sweep.yaml`: default TensorRT-LLM precision sweep config for initial single-GPU testing.
+- `configs/llama33_70b_precision_sweep.yaml`: larger Llama 3.3 70B config for future multi-GPU experiments.
+- `configs/edgellm_llama31_8b_precision_sweep.yaml`: TensorRT Edge-LLM FP16/FP8/NVFP4 config.
+- `configs/edgellm_llama31_8b_longctx.yaml`: long-context workload used for prefill/decode profiling.
+- `scripts/run_precision_sweep.py`: Python benchmark driver for TensorRT-LLM and Transformers fallback runs.
+- `scripts/edgellm_*.sh`: TensorRT Edge-LLM export, build, run, and profiling helpers.
+- `scripts/check_blackwell_env.sh`: quick device/environment checker.
+- `patches/tensorrt-edgellm-nvtx-decode-ranges.patch`: local Edge-LLM runtime instrumentation patch used for NVTX profiling.
 
 ## Environment
 
-推荐在 Linux GPU 机器上使用 NVIDIA TensorRT-LLM container。Windows 本机通常适合写代码和准备配置，不适合作为 70B TensorRT-LLM benchmark 环境。
+For standard x86 Linux GPU servers, NVIDIA TensorRT-LLM containers are usually the simplest option. For NVIDIA Thor/Tegra-style `aarch64` systems, this project uses a user-level conda/miniforge environment and the existing system CUDA/TensorRT installation.
 
-### NVIDIA Thor / aarch64 conda path
-
-如果机器是 NVIDIA Thor / Tegra / `aarch64`，可以不走 Docker，直接用 conda 环境。当前已验证可 import 的组合是：
+The Thor environment used for development had:
 
 ```text
 Python 3.12
@@ -25,108 +26,67 @@ TensorRT 10.13.3.9 from host system packages
 TensorRT-LLM 1.1.0
 Transformers 4.56.0
 OpenMPI from conda-forge
+CUDA 13.0 tools
+Nsight Systems / Nsight Compute
 ```
 
-关键点：
+Important environment settings:
 
 ```bash
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 export TLLM_WORKER_USE_SINGLE_PROCESS=1
 ```
 
-`TLLM_WORKER_USE_SINGLE_PROCESS=1` 对单 GPU / TP=1 很重要，可以避免 TensorRT-LLM 默认用 `MpiPoolSession` spawn worker 时在 Thor 环境里卡住。
+`TLLM_WORKER_USE_SINGLE_PROCESS=1` is useful for single-GPU TensorRT-LLM runs because it avoids the default MPI worker spawn path, which was unstable on the Thor test system.
 
-TensorRT 的 Python binding 在 host 系统路径里：
-
-```text
-/usr/lib/python3.12/dist-packages
-```
-
-如果 conda env 里要复用 host TensorRT，可以加：
+If the conda environment needs to reuse the host TensorRT Python bindings, add the host path to the environment:
 
 ```bash
 echo /usr/lib/python3.12/dist-packages > ~/miniforge3/envs/trtllm/lib/python3.12/site-packages/system-tensorrt.pth
 ```
 
-这台机器上 TensorRT-LLM 1.2.0 会尝试安装 TensorRT 10.14 pip wheel，但 Tegra 平台不支持该 TensorRT wheel；因此当前先用 TensorRT-LLM 1.1.0 对齐 host TensorRT 10.13.3。
-
-先在 Blackwell 机器上检查已有环境：
+To inspect a new Blackwell/Thor machine:
 
 ```bash
 chmod +x scripts/check_blackwell_env.sh
 ./scripts/check_blackwell_env.sh | tee blackwell_env_check.txt
 ```
 
-把 `blackwell_env_check.txt` 里的缺项整理给管理员即可。
-
-最少需要：
-
-```bash
-pip install -r requirements.txt
-```
-
-如果用 Hugging Face 上的 gated Llama 3.3 权重或 NVIDIA 发布的量化权重，先登录并确认 license：
+For gated Llama or NVIDIA quantized checkpoints, authenticate with Hugging Face first:
 
 ```bash
 huggingface-cli login
 ```
 
-## Prepare models
+## Model Choices
 
-推荐先用 Llama 3.1 8B：
-
-```yaml
-FP16/BF16 baseline: meta-llama/Llama-3.1-8B-Instruct
-FP8: nvidia/Llama-3.1-8B-Instruct-FP8
-NVFP4: nvidia/Llama-3.1-8B-Instruct-NVFP4
-```
-
-FP16/BF16 baseline 可以直接指向 HF model id 或本地目录：
-
-```yaml
-model: meta-llama/Llama-3.3-70B-Instruct
-```
-
-现在 Hugging Face 上已经有 NVIDIA 发布的 Llama 3.3 70B 量化 checkpoint，可以先直接用：
-
-```yaml
-model: nvidia/Llama-3.3-70B-Instruct-NVFP4
-precision: nvfp4
-quantization:
-  mode: prequantized
-```
-
-FP8 对应：
-
-```yaml
-model: nvidia/Llama-3.3-70B-Instruct-FP8
-precision: fp8
-quantization:
-  mode: prequantized
-  kv_cache: fp8
-```
-
-如果后面需要自己控制 calibration dataset、scaling policy 或 TensorRT-LLM/ModelOpt 版本，再单独生成自己的 FP8/NVFP4 checkpoint。
-
-## Run
-
-### TensorRT Edge-LLM on Thor
-
-For NVIDIA Thor, use TensorRT Edge-LLM instead of the regular TensorRT-LLM Python LLM API.
-
-Official TensorRT Edge-LLM docs describe the flow as:
+Recommended initial model:
 
 ```text
-Hugging Face model -> quantize on x86 -> export ONNX on x86 -> transfer ONNX -> build engine on Thor -> run C++ inference on Thor
+FP16/BF16 baseline: meta-llama/Llama-3.1-8B-Instruct
+FP8 target: optional Edge-LLM/ModelOpt export path
+NVFP4 target: Edge-LLM/ModelOpt export path
 ```
 
-The Edge-LLM config for the three precision variants is:
+Llama 3.1 8B is small enough to iterate on a single device while still exercising realistic transformer inference behavior: prefill attention, autoregressive decode, KV-cache updates, MLP GEMMs, fused normalization/cast kernels, and sampling overhead.
+
+## TensorRT Edge-LLM on Thor
+
+On NVIDIA Thor, use TensorRT Edge-LLM instead of the regular TensorRT-LLM Python LLM API. The standard TensorRT-LLM Python API hit unsupported fused-attention kernels on the target system, while Edge-LLM successfully built and ran FP16 and NVFP4 engines.
+
+The Edge-LLM flow is:
+
+```text
+Hugging Face model -> quantize/export ONNX -> build TensorRT engine on Thor -> run C++ inference on Thor
+```
+
+Check the device:
 
 ```bash
-configs/edgellm_llama31_8b_precision_sweep.yaml
+CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_check_device.sh
 ```
 
-On an x86 host with the Edge-LLM export tools:
+Export on the machine where the Edge-LLM Python export tools are available:
 
 ```bash
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_host.sh fp16
@@ -134,127 +94,111 @@ CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_host.sh nvfp4
 ```
 
-Then transfer the exported ONNX folders to Thor under the same workspace path.
-
-On Thor:
+Build and run on Thor:
 
 ```bash
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_check_device.sh
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_build_device.sh fp16
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_run_device.sh fp16
 ```
 
-For profiling:
+Repeat the build/run commands for `fp8` and `nvfp4` after export succeeds.
 
-```bash
-PROFILE=nsys ./scripts/edgellm_run_device.sh fp16
-PROFILE=ncu NCU_LAUNCH_SKIP=10 NCU_LAUNCH_COUNT=50 ./scripts/edgellm_run_device.sh fp16
-```
+## Edge-LLM NVTX Instrumentation
 
-For cleaner prefill/decode separation, enable Edge-LLM's built-in NVTX ranges once after cloning/building Edge-LLM:
+For cleaner prefill/decode separation, enable Edge-LLM's NVTX profiling path and apply the local instrumentation patch:
 
 ```bash
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_enable_nvtx_device.sh
 ```
 
-The Edge-LLM runtime instrumentation used by this script is also saved as a repository patch:
+The runtime patch is stored in:
 
 ```text
 patches/tensorrt-edgellm-nvtx-decode-ranges.patch
 ```
 
-This patch records our local Edge-LLM changes: adding decode-forward and decode-sampling NVTX ranges in `llmInferenceRuntime.cpp`, plus a small NVTX color-definition fix needed by the current Edge-LLM source.
+The patch records our local Edge-LLM changes:
 
-Then NCU can filter by runtime stage instead of relying only on global kernel launch numbers:
+- add `LLM_DECODE_FORWARD[...]` around decode model-forward enqueue;
+- add `LLM_DECODE_SAMPLING[...]` around topK/sampling and token bookkeeping;
+- add a small NVTX color-definition fix needed by the current Edge-LLM source.
+
+These labels are used for profiling and are not intended to change model outputs.
+
+## Profiling
+
+Nsight Systems captures the full timeline:
 
 ```bash
-# Prefill only
-nohup env PROFILE=ncu NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_PREFILL.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_prefill.yaml \
-  ./scripts/edgellm_run_device.sh fp16 \
-  > results/fp16_prefill_ncu_full_nvtx.log 2>&1 &
-
-# Decode forward only
-nohup env PROFILE=ncu NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_DECODE_FORWARD.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_decode.yaml \
-  ./scripts/edgellm_run_device.sh fp16 \
-  > results/fp16_decode_ncu_full_nvtx.log 2>&1 &
+PROFILE=nsys PROFILE_TAG=full CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh fp16
 ```
 
-The trailing `/` in `NCU_NVTX_INCLUDE` is required because Edge-LLM emits push/pop NVTX ranges. `LLM_DECODE_FORWARD` captures the decode model-forward path, while `LLM_DECODE_SAMPLING` can be used separately for topK/sampling overhead.
+Nsight Compute captures detailed kernel metrics. The trailing `/` in `NCU_NVTX_INCLUDE` is required because Edge-LLM emits push/pop NVTX ranges.
 
-Repeat `fp8` and `nvfp4` after the corresponding engines are built.
+Prefill:
 
-### TensorRT-LLM Python API fallback
+```bash
+nohup env PROFILE=ncu PROFILE_TAG=prefill NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_PREFILL.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh fp16 \
+  > results/fp16_longctx_prefill_ncu_full_nvtx.log 2>&1 &
+```
 
-先编辑 `configs/llama33_70b_precision_sweep.yaml` 里的模型路径、tensor parallel size、batch/input/output token 长度，然后运行：
+Decode forward:
+
+```bash
+nohup env PROFILE=ncu PROFILE_TAG=decodeforward NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_DECODE_FORWARD.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh fp16 \
+  > results/fp16_longctx_decodeforward_ncu_full_nvtx.log 2>&1 &
+```
+
+Sampling overhead:
+
+```bash
+nohup env PROFILE=ncu PROFILE_TAG=decodesampling NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_DECODE_SAMPLING.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=20 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh fp16 \
+  > results/fp16_longctx_decodesampling_ncu_full_nvtx.log 2>&1 &
+```
+
+Important interpretation note: TensorRT Edge-LLM uses CUDA graph execution and stream synchronization, so CPU-side NVTX wall time can include asynchronous enqueue and synchronization effects. Use Nsight Systems for stage/timeline structure and Nsight Compute for kernel-level bottleneck analysis.
+
+## TensorRT-LLM Python API Fallback
+
+The original TensorRT-LLM Python benchmark path is still available for non-Thor systems or smoke tests:
 
 ```bash
 python scripts/run_precision_sweep.py --config configs/llama31_8b_precision_sweep.yaml
 ```
 
-结果会写到：
+Results are written as JSONL:
 
 ```text
 results/llama31_8b_precision_sweep.jsonl
 ```
 
-每行是一条实验，包括：
+Each row records precision, model, backend, batch size, prompt/output token estimates, latency, throughput, and peak GPU memory.
 
-- precision / model / backend
-- batch size、prompt/output token 估计
-- end-to-end latency
-- token throughput
-- GPU peak memory
-
-## Profiling bottleneck shift
-
-这个脚手架默认记录端到端指标。真正写 paper/report 时建议同一组配置再用 Nsight Systems / Nsight Compute 包一层：
+The Transformers fallback config can be used for a simple FP16 sanity check:
 
 ```bash
-nsys profile -o results/fp16_nsys python scripts/run_precision_sweep.py --config configs/llama33_70b_precision_sweep.yaml --only fp16
-nsys profile -o results/nvfp4_nsys python scripts/run_precision_sweep.py --config configs/llama33_70b_precision_sweep.yaml --only nvfp4
+python scripts/run_precision_sweep.py --config configs/llama31_8b_transformers_smoke.yaml
 ```
 
-也可以用封装脚本。Nsight Systems 用来先看端到端 timeline：
+## What to Compare
 
-```bash
-WORKLOAD=balanced ./scripts/profile_with_nsight.sh fp16 nsys
-WORKLOAD=balanced ./scripts/profile_with_nsight.sh fp8 nsys
-WORKLOAD=balanced ./scripts/profile_with_nsight.sh nvfp4 nsys
-```
+The main evaluation compares FP16 and NVFP4 under the same long-context workload:
 
-Nsight Compute 用来抓少量 kernel 的硬件计数器，默认只抓 50 个 kernel launch，避免整段 decode 被极慢地 profile：
+- dominant kernel categories in prefill and decode;
+- Tensor Core/GEMM utilization;
+- DRAM/L2/L1 throughput;
+- roofline position;
+- scheduler and warp stall reasons;
+- whether non-GEMM kernels such as KV-cache update, RoPE, fused cast/norm, quantization, or sampling become more visible after precision reduction.
 
-```bash
-WORKLOAD=prefill NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh fp16 ncu
-WORKLOAD=prefill NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh fp8 ncu
-WORKLOAD=prefill NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh nvfp4 ncu
-
-WORKLOAD=decode NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh fp16 ncu
-WORKLOAD=decode NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh fp8 ncu
-WORKLOAD=decode NCU_LAUNCH_SKIP=20 NCU_LAUNCH_COUNT=50 ./scripts/profile_with_nsight.sh nvfp4 ncu
-```
-
-`WORKLOAD` 默认是 `balanced`，可选：
-
-- `prefill`: 4096 prompt tokens, 1 output token
-- `decode`: 128 prompt tokens, 512 output tokens
-- `balanced`: 1024 prompt tokens, 128 output tokens
-
-也可以手动覆盖 token 数：
-
-```bash
-BATCH_SIZE=1 WORKLOAD=prefill PROMPT_TOKENS=8192 OUTPUT_TOKENS=1 ./scripts/profile_with_nsight.sh nvfp4 nsys
-```
-
-重点看：
-
-- GEMM/Tensor Core utilization 是否提升。
-- DRAM throughput 是否从主瓶颈变弱。
-- dequant / quantize / KV cache kernel 是否变成新瓶颈。
-- prefill 和 decode 阶段的瓶颈是否不同。
+The expected research question is not only whether NVFP4 is faster, but whether it shifts the bottleneck differently in prefill and decode.
 
 ## Notes
 
-- NVFP4 主要是 Blackwell 路线；在非 Blackwell 设备上应该预期跳过或失败。
-- FP8 在 Hopper/Blackwell 上更成熟，适合作为中间精度对照组。
-- 70B 做 FP16 通常需要多卡 tensor parallelism；默认配置按 4 卡起步写。
+- NVFP4 is a Blackwell-oriented format; unsupported devices should be expected to fail or skip NVFP4 paths.
+- FP8 is useful as an intermediate precision comparison, but the Edge-LLM FP8 export path may require additional memory/toolchain work.
+- Llama 3.3 70B FP16 typically requires multi-GPU tensor parallelism; Llama 3.1 8B is the recommended first-pass model for pipeline validation.
