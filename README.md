@@ -157,6 +157,14 @@ For cleaner prefill/decode separation, enable Edge-LLM's built-in NVTX ranges on
 CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_enable_nvtx_device.sh
 ```
 
+The Edge-LLM runtime instrumentation used by this script is also saved as a repository patch:
+
+```text
+patches/tensorrt-edgellm-nvtx-decode-ranges.patch
+```
+
+This patch records our local Edge-LLM changes: adding decode-forward and decode-sampling NVTX ranges in `llmInferenceRuntime.cpp`, plus a small NVTX color-definition fix needed by the current Edge-LLM source.
+
 Then NCU can filter by runtime stage instead of relying only on global kernel launch numbers:
 
 ```bash

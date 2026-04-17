@@ -1,0 +1,64 @@
+diff --git a/cpp/profiling/nvtx_wrapper.h b/cpp/profiling/nvtx_wrapper.h
+--- a/cpp/profiling/nvtx_wrapper.h
++++ b/cpp/profiling/nvtx_wrapper.h
+@@ -55,6 +55,7 @@ constexpr auto PALE_GREEN = NVTX_RGB(150, 255, 150);
+ 
+ // Pink/Purple tones
+ constexpr auto PINK = NVTX_RGB(255, 150, 200);
++constexpr auto PURPLE = NVTX_RGB(160, 100, 255);
+ constexpr auto MAGENTA = NVTX_RGB(255, 0, 128);
+ 
+ } // namespace nvtx_colors
+diff --git a/cpp/runtime/llmInferenceRuntime.cpp b/cpp/runtime/llmInferenceRuntime.cpp
+--- a/cpp/runtime/llmInferenceRuntime.cpp
++++ b/cpp/runtime/llmInferenceRuntime.cpp
+@@ -770,20 +770,42 @@ bool LLMInferenceRuntime::generate(LLMRequest const& request, LLMResponse& respo
+                     .c_str(),
+                 nvtx_colors::LIGHT_GREEN);
+ 
+-            // Perform embedding lookup for the selected token indices (decode only has text, no images)
+-            kernel::embeddingLookup(mSelectedIndices, mEmbeddingTable, mInputsEmbeds, stream);
+-
+-            // Use the embedded tokens as input for the decoding step.
+-            // No hidden states output needed for standard LLM decoding.
+-            rt::OptionalOutputTensor const outputHiddenStates{std::nullopt};
+-            bool decodingStatus = mLLMEngineRunner->executeVanillaDecodingStep(
+-                mInputsEmbeds, mOutputLogits, outputHiddenStates, stream);
+-            if (!decodingStatus)
++            {
++                NVTX_SCOPED_RANGE(decode_forward_range,
++                    ("LLM_DECODE_FORWARD[" + std::to_string(generationIter) + "/"
++                        + std::to_string(maxGenerationLength) + ",Active=" + std::to_string(unFinishedBatchNum) + "]")
++                        .c_str(),
++                    nvtx_colors::ORANGE);
++
++                // Perform embedding lookup for the selected token indices (decode only has text, no images)
++                kernel::embeddingLookup(mSelectedIndices, mEmbeddingTable, mInputsEmbeds, stream);
++
++                // Use the embedded tokens as input for the decoding step.
++                // No hidden states output needed for standard LLM decoding.
++                rt::OptionalOutputTensor const outputHiddenStates{std::nullopt};
++                bool decodingStatus = mLLMEngineRunner->executeVanillaDecodingStep(
++                    mInputsEmbeds, mOutputLogits, outputHiddenStates, stream);
++                if (!decodingStatus)
++                {
++                    LOG_ERROR("LLMInferenceRuntime(): Failed to execute decoding step.");
++                    return false;
++                }
++            }
++
+             {
+-                LOG_ERROR("LLMInferenceRuntime(): Failed to execute decoding step.");
+-                return false;
++                NVTX_SCOPED_RANGE(decode_sampling_range,
++                    ("LLM_DECODE_SAMPLING[" + std::to_string(generationIter) + "/"
++                        + std::to_string(maxGenerationLength) + ",Active=" + std::to_string(unFinishedBatchNum) + "]")
++                        .c_str(),
++                    nvtx_colors::YELLOW);
++                sampleTokens();
+             }
+-
+-            sampleTokens();
+         }
+     }
+ 
