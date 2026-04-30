@@ -15,20 +15,36 @@ This repository contains a profiling scaffold for studying how reduced precision
 
 ## Environment
 
-For standard x86 Linux GPU servers, NVIDIA TensorRT-LLM containers are usually the simplest option. For NVIDIA Thor/Tegra-style `aarch64` systems, this project uses a user-level conda/miniforge environment and the existing system CUDA/TensorRT installation.
+For standard x86 Linux GPU servers, NVIDIA TensorRT-LLM containers are usually the simplest option. For NVIDIA Thor/Tegra-style `aarch64` systems, this project uses a user-level conda/miniforge environment on top of the existing host CUDA/TensorRT installation.
 
-The Thor environment used for development had:
+The host system used for development already provided:
+
+```text
+CUDA 13.0 tools
+TensorRT 10.13.3.9
+Nsight Systems
+Nsight Compute
+standard build toolchain
+```
+
+Inside our user-managed `trtllm` conda environment, we installed:
 
 ```text
 Python 3.12
-PyTorch 2.9.0+cu130
-TensorRT 10.13.3.9 from host system packages
+PyTorch 2.10.0+cu130
 TensorRT-LLM 1.1.0
-Transformers 4.56.0
+Transformers 4.57.6
 OpenMPI from conda-forge
-CUDA 13.0 tools
-Nsight Systems / Nsight Compute
+huggingface_hub
+safetensors
+sentencepiece
+accelerate
+datasets
 ```
+
+TensorRT Edge-LLM itself was cloned and built from source against this combined setup.
+
+The exact Python package versions may drift over time if the shared conda environment is updated. The values above reflect the current checked versions on the development machine.
 
 Important environment settings:
 
@@ -51,6 +67,14 @@ To inspect a new Blackwell/Thor machine:
 chmod +x scripts/check_blackwell_env.sh
 ./scripts/check_blackwell_env.sh | tee blackwell_env_check.txt
 ```
+
+To install the Python-side dependencies inside a fresh conda environment:
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs only the Python packages used by the repository scripts. It does not install the required host-level CUDA, TensorRT, Nsight, or compiler toolchain components.
 
 For gated Llama or NVIDIA quantized checkpoints, authenticate with Hugging Face first:
 

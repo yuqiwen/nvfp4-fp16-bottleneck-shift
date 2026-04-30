@@ -1,5 +1,17 @@
-tensorrt-llm
+# Core Python-side dependencies for the benchmark scripts.
+# These do not replace the required host CUDA/TensorRT/Nsight toolchain.
+
+pyyaml
+nvidia-ml-py
+
+# LLM/runtime stack
 torch
 transformers
-pyyaml
-pynvml
+tensorrt-llm
+huggingface_hub
+safetensors
+sentencepiece
+accelerate
+
+# Useful for quantization/export workflows
+datasets
