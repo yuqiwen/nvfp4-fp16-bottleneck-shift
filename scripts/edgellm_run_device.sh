@@ -27,6 +27,16 @@ repo = Path(os.path.expanduser(cfg["edgellm_repo"]))
 model_name = cfg["model"]["name"]
 run_cfg = cfg["run"]
 run_name = str(run_cfg.get("name", "default")).lower().replace(" ", "_")
+prompt_repeat = int(run_cfg.get("prompt_repeat", 1))
+prompt_file = run_cfg.get("prompt_file")
+if prompt_file:
+    prompt_path = Path(prompt_file)
+    if not prompt_path.is_absolute():
+        prompt_path = (config_path.parent / prompt_path).resolve()
+    prompt_base = prompt_path.read_text().strip()
+else:
+    prompt_base = str(run_cfg["prompt"]).strip()
+prompt_text = ((prompt_base + "\n\n") * prompt_repeat).strip()
 profile_tag = os.environ.get("PROFILE_TAG") or os.environ.get("NCU_PROFILE_TAG") or ""
 profile_tag = profile_tag.lower().strip().replace(" ", "_")
 profile_suffix = f"_{profile_tag}" if profile_tag else ""
@@ -57,7 +67,7 @@ input_file.write_text(json.dumps({
     "requests": [{
         "messages": [
             {"role": "system", "content": "You are a concise GPU performance analyst."},
-            {"role": "user", "content": run_cfg["prompt"]},
+            {"role": "user", "content": prompt_text},
         ]
     }],
 }, indent=2) + "\n")
@@ -74,6 +84,7 @@ if profile == "nsys":
         "nsys", "profile",
         "--trace=cuda,nvtx,osrt",
         "--cuda-memory-usage=true",
+        "--cuda-graph-trace=node",
         "--stats=true",
         "--force-overwrite=true",
         "-o", profile_dir / f"{precision}_{run_name}{profile_suffix}_nsys",

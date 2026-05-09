@@ -2,35 +2,35 @@ workspace_dir: ~/tensorrt-edgellm-workspace
 edgellm_repo: ~/TensorRT-Edge-LLM
 
 model:
-  name: Llama-3.1-8B-Instruct
-  hf_id: meta-llama/Llama-3.1-8B-Instruct
+  name: Qwen2.5-14B-Instruct
+  hf_id: Qwen/Qwen2.5-14B-Instruct
 
 build:
   max_batch_size: 1
-  max_input_len: 1024
-  max_kv_cache_capacity: 4096
+  max_input_len: 32768
+  max_kv_cache_capacity: 33280
 
 run:
-  name: decode
+  name: longctx
   batch_size: 1
   temperature: 0.0
   top_p: 1.0
   top_k: 1
   max_generate_length: 128
-  prompt: "Explain how FP16 and NVFP4 precision can shift GPU inference bottlenecks during autoregressive decoding."
+  prompt_file: ../scripts/prompt.txt
 
 experiments:
-  - name: llama31_8b_fp16
+  - name: qwen25_14b_fp16
     precision: fp16
     quantization: none
     enabled: true
 
-  - name: llama31_8b_fp8
+  - name: qwen25_14b_fp8
     precision: fp8
     quantization: fp8
     enabled: true
 
-  - name: llama31_8b_nvfp4
+  - name: qwen25_14b_nvfp4
     precision: nvfp4
     quantization: nvfp4
     enabled: true

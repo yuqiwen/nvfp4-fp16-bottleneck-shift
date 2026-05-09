@@ -23,6 +23,16 @@ repo = Path(os.path.expanduser(cfg["edgellm_repo"]))
 model_name = cfg["model"]["name"]
 build = cfg["build"]
 run_cfg = cfg["run"]
+prompt_repeat = int(run_cfg.get("prompt_repeat", 1))
+prompt_file = run_cfg.get("prompt_file")
+if prompt_file:
+    prompt_path = Path(prompt_file)
+    if not prompt_path.is_absolute():
+        prompt_path = (config_path.parent / prompt_path).resolve()
+    prompt_base = prompt_path.read_text().strip()
+else:
+    prompt_base = str(run_cfg["prompt"]).strip()
+prompt_text = ((prompt_base + "\n\n") * prompt_repeat).strip()
 
 llm_build = repo / "build" / "examples" / "llm" / "llm_build"
 if not llm_build.exists():
@@ -69,7 +79,7 @@ for exp in cfg["experiments"]:
         "requests": [{
             "messages": [
                 {"role": "system", "content": "You are a concise GPU performance analyst."},
-                {"role": "user", "content": run_cfg["prompt"]},
+                {"role": "user", "content": prompt_text},
             ]
         }],
     }, indent=2) + "\n")

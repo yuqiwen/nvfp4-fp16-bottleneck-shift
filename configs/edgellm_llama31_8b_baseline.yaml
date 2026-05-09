@@ -11,7 +11,7 @@ build:
   max_kv_cache_capacity: 4096
 
 run:
-  name: longctx
+  name: baseline
   batch_size: 1
   temperature: 0.0
   top_p: 1.0

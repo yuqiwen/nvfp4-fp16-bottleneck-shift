@@ -1,0 +1,90 @@
+workspace_dir: ~/tensorrt-edgellm-workspace
+edgellm_repo: ~/TensorRT-Edge-LLM
+
+model:
+  name: Qwen2.5-14B-Instruct
+  hf_id: Qwen/Qwen2.5-14B-Instruct
+
+build:
+  max_batch_size: 1
+  max_input_len: 1024
+  max_kv_cache_capacity: 4096
+
+run:
+  name: baseline
+  batch_size: 1
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 1
+  max_generate_length: 128
+  prompt: >-
+    Analyze GPU inference bottlenecks for transformer language models. Focus on
+    how precision formats change arithmetic intensity, memory bandwidth demand,
+    cache behavior, tensor core utilization, dequantization overhead, and kernel
+    scheduling. During prefill, the model processes the full prompt in parallel,
+    so long sequence matrix multiplications, attention score computation, MLP
+    projections, layer normalization, rotary embedding, and key value cache
+    writes dominate the workload. During decode, each newly generated token
+    attends over the accumulated key value cache, so long context length
+    increases cache reads, memory transactions, attention work, and pressure on
+    L2 and DRAM. FP16 stores weights and activations with wider elements, while
+    FP8 and NVFP4 reduce data movement and may shift pressure toward tensor core
+    throughput, scale handling, memory layout conversion, or small auxiliary
+    kernels. The important question is whether reduced precision changes the
+    bottleneck from bandwidth to compute, from compute to memory, or from large
+    GEMM kernels to overheads around quantization and cache updates. Compare the
+    behavior using Nsight Systems for timeline structure and Nsight Compute for
+    kernel-level throughput, occupancy, cache usage, memory transactions, warp
+    stalls, scheduler behavior, and roofline placement. Repeat this analysis for
+    many transformer layers and describe how the prefill phase differs from the
+    decode phase. Analyze GPU inference bottlenecks for transformer language
+    models. Focus on how precision formats change arithmetic intensity, memory
+    bandwidth demand, cache behavior, tensor core utilization, dequantization
+    overhead, and kernel scheduling. During prefill, the model processes the
+    full prompt in parallel, so long sequence matrix multiplications, attention
+    score computation, MLP projections, layer normalization, rotary embedding,
+    and key value cache writes dominate the workload. During decode, each newly
+    generated token attends over the accumulated key value cache, so long context
+    length increases cache reads, memory transactions, attention work, and
+    pressure on L2 and DRAM. FP16 stores weights and activations with wider
+    elements, while FP8 and NVFP4 reduce data movement and may shift pressure
+    toward tensor core throughput, scale handling, memory layout conversion, or
+    small auxiliary kernels. The important question is whether reduced precision
+    changes the bottleneck from bandwidth to compute, from compute to memory, or
+    from large GEMM kernels to overheads around quantization and cache updates.
+    Compare the behavior using Nsight Systems for timeline structure and Nsight
+    Compute for kernel-level throughput, occupancy, cache usage, memory
+    transactions, warp stalls, scheduler behavior, and roofline placement.
+    Repeat this analysis for many transformer layers and describe how the
+    prefill phase differs from the decode phase. In the final comparison,
+    separate the cost of reading weights from the cost of reading and updating
+    the key value cache. Explain when lower precision should reduce DRAM bytes,
+    when it should expose tensor core throughput as the new limiter, and when
+    extra conversion kernels, scaling metadata, or synchronization overhead can
+    become visible in Nsight traces. Use consistent batch size, prompt length,
+    generated token count, and sampling settings so FP16 and NVFP4 can be
+    compared fairly. The report should identify dominant kernels, classify them
+    as GEMM, attention, normalization, activation, cache update, sampling, or
+    framework overhead, and explain which metrics indicate a bottleneck shift.
+    Analyze GPU inference bottlenecks for transformer language models. During
+    decode, emphasize that every token reuses the full prior context through KV
+    cache reads, so a long prompt is required before generation begins. This
+    long-context decode setting is intended to stress cache bandwidth, memory
+    hierarchy behavior, and attention scheduling rather than just measuring
+    launch overhead from a tiny prompt.
+
+experiments:
+  - name: qwen25_14b_fp16
+    precision: fp16
+    quantization: none
+    enabled: true
+
+  - name: qwen25_14b_fp8
+    precision: fp8
+    quantization: fp8
+    enabled: true
+
+  - name: qwen25_14b_nvfp4
+    precision: nvfp4
+    quantization: nvfp4
+    enabled: true
