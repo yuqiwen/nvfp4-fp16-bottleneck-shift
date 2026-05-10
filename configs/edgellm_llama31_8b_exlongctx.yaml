@@ -1,0 +1,36 @@
+workspace_dir: ~/tensorrt-edgellm-workspace
+edgellm_repo: ~/TensorRT-Edge-LLM
+
+model:
+  name: Llama-3.1-8B-Instruct
+  hf_id: meta-llama/Llama-3.1-8B-Instruct
+
+build:
+  max_batch_size: 1
+  max_input_len: 100000
+  max_kv_cache_capacity: 200000
+
+run:
+  name: exlongctx
+  batch_size: 1
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 1
+  max_generate_length: 128
+  prompt_file: ../scripts/exlong_prompt.txt
+
+experiments:
+  - name: llama31_8b_fp16
+    precision: fp16
+    quantization: none
+    enabled: true
+
+  - name: llama31_8b_fp8
+    precision: fp8
+    quantization: fp8
+    enabled: true
+
+  - name: llama31_8b_nvfp4
+    precision: nvfp4
+    quantization: nvfp4
+    enabled: true
