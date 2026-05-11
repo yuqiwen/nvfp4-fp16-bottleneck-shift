@@ -1,0 +1,12 @@
+diff --git a/cpp/common/inputLimits.h b/cpp/common/inputLimits.h
+index 0c55d1a..4b47c80 100644
+--- a/cpp/common/inputLimits.h
++++ b/cpp/common/inputLimits.h
+@@ -40,7 +40,7 @@ namespace tensorrt::edgellm::common
+ // Maximum message content size in bytes for JSON input parsing.
+ // This limit applies to each individual message content string.
+ // It is intentionally conservative to avoid accidental oversized allocations.
+-constexpr size_t kMaxMessageContentSizeBytes = 128 * 1024; // 128KB per content item
++constexpr size_t kMaxMessageContentSizeBytes = 512 * 1024; // 512KB per content item
+ 
+ } // namespace tensorrt::edgellm::common

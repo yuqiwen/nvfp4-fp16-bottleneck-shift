@@ -1,23 +1,73 @@
-# NVFP4 vs FP16 GPU Bottleneck Shift Benchmark
+# NVFP4 vs FP16 Bottleneck Shift in LLM Inference
 
-This repository contains a profiling scaffold for studying how reduced precision changes GPU bottlenecks during LLM inference. The current working target is Llama 3.1 8B Instruct on NVIDIA Thor/Blackwell-class hardware, with FP16 as the baseline and NVFP4 as the primary low-precision target. Llama 3.3 70B remains a follow-up scale-up target once the pipeline is stable.
+This repository contains the experiment scaffold we used to study how inference bottlenecks change when moving from FP16 to NVFP4 on NVIDIA Thor/Blackwell-class hardware using TensorRT Edge-LLM.
+
+The final experiment design is organized around two model roles:
+
+- **Llama 3.1 8B Instruct**: baseline, long-context, and extra-long-context studies for understanding how bottlenecks evolve as prompt length and KV-cache size increase.
+- **Qwen2.5-14B Instruct**: cross-model comparison under baseline and long-context settings to test whether the FP16-to-NVFP4 speedup pattern generalizes beyond a single model family.
+
+The project focuses on **bottleneck shift**, not just raw speedup. We compare:
+
+- stage-level behavior in **prefill** and **decode**
+- kernel-family changes under **FP16** and **NVFP4**
+- context scaling from baseline to long and extra-long prompt regimes
 
 ## Repository Layout
 
-- `configs/llama31_8b_precision_sweep.yaml`: default TensorRT-LLM precision sweep config for initial single-GPU testing.
-- `configs/llama33_70b_precision_sweep.yaml`: larger Llama 3.3 70B config for future multi-GPU experiments.
-- `configs/edgellm_llama31_8b_precision_sweep.yaml`: TensorRT Edge-LLM FP16/FP8/NVFP4 config.
-- `configs/edgellm_llama31_8b_longctx.yaml`: long-context workload used for prefill/decode profiling.
-- `scripts/run_precision_sweep.py`: Python benchmark driver for TensorRT-LLM and Transformers fallback runs.
-- `scripts/edgellm_*.sh`: TensorRT Edge-LLM export, build, run, and profiling helpers.
-- `scripts/check_blackwell_env.sh`: quick device/environment checker.
-- `patches/tensorrt-edgellm-nvtx-decode-ranges.patch`: local Edge-LLM runtime instrumentation patch used for NVTX profiling.
+### Configs
+
+- `configs/edgellm_llama31_8b_baseline.yaml`  
+  Llama 3.1 8B baseline configuration.
+
+- `configs/edgellm_llama31_8b_longctx.yaml`  
+  Llama 3.1 8B long-context configuration.
+
+- `configs/edgellm_llama31_8b_exlongctx.yaml`  
+  Llama 3.1 8B extra-long-context configuration driven by a very long prompt file.
+
+- `configs/edgellm_qwen25_14b_baseline.yaml`  
+  Qwen2.5-14B baseline configuration.
+
+- `configs/edgellm_qwen25_14b_longctx.yaml`  
+  Qwen2.5-14B long-context configuration.
+
+### Scripts
+
+- `scripts/edgellm_export_host.sh`  
+  Export or quantize-and-export the selected model to TensorRT Edge-LLM ONNX format.
+
+- `scripts/edgellm_build_device.sh`  
+  Build TensorRT engines with the configured `max_input_len` and `max_kv_cache_capacity`.
+
+- `scripts/edgellm_run_device.sh`  
+  Run inference normally, with `nsys`, or with `ncu`. The `nsys` path includes CUDA graph node tracing so decode-stage graph nodes are visible in the timeline.
+
+- `scripts/edgellm_enable_nvtx_device.sh`  
+  Apply the local NVTX instrumentation patch to TensorRT Edge-LLM on the target machine.
+
+- `scripts/query_nsys_sqlite.py`  
+  Helper script for extracting `LLM_PREFILL`, `LLM_GENERATION`, and `Decode_Iter` timing from exported Nsight Systems SQLite traces.
+
+- `scripts/prompt.txt`  
+  Long-form prompt used for Qwen long-context experiments.
+
+- `scripts/exlong_prompt.txt`  
+  Extra-long prompt used for the Llama 3.1 8B extra-long-context experiments.
+
+### Patches
+
+- `patches/tensorrt-edgellm-nvtx-decode-ranges.patch`  
+  Adds additional NVTX ranges for cleaner prefill/decode profiling.
+
+- `patches/tensorrt-edgellm-input-limit-512k.patch`  
+  Raises the Edge-LLM JSON message content size limit from `128 * 1024` to `512 * 1024` bytes so extra-long prompt inputs can be parsed by `llm_inference`.
 
 ## Environment
 
-For standard x86 Linux GPU servers, NVIDIA TensorRT-LLM containers are usually the simplest option. For NVIDIA Thor/Tegra-style `aarch64` systems, this project uses a user-level conda/miniforge environment on top of the existing host CUDA/TensorRT installation.
+For NVIDIA Thor/Tegra-style `aarch64` systems, we use a user-managed Conda environment on top of the host CUDA and TensorRT installation rather than a TensorRT-LLM container.
 
-The host system used for development already provided:
+The host development system provided:
 
 ```text
 CUDA 13.0 tools
@@ -27,7 +77,7 @@ Nsight Compute
 standard build toolchain
 ```
 
-Inside our user-managed `trtllm` conda environment, we installed:
+Inside the `trtllm` Conda environment, we used:
 
 ```text
 Python 3.12
@@ -42,9 +92,7 @@ accelerate
 datasets
 ```
 
-TensorRT Edge-LLM itself was cloned and built from source against this combined setup.
-
-The exact Python package versions may drift over time if the shared conda environment is updated. The values above reflect the current checked versions on the development machine.
+TensorRT Edge-LLM was cloned and built from source against this combined host-plus-Conda setup.
 
 Important environment settings:
 
@@ -53,176 +101,196 @@ export PATH=/usr/local/cuda-13.0/bin:$PATH
 export TLLM_WORKER_USE_SINGLE_PROCESS=1
 ```
 
-`TLLM_WORKER_USE_SINGLE_PROCESS=1` is useful for single-GPU TensorRT-LLM runs because it avoids the default MPI worker spawn path, which was unstable on the Thor test system.
+`TLLM_WORKER_USE_SINGLE_PROCESS=1` helps avoid the default MPI worker path for single-GPU testing on Thor.
 
-If the conda environment needs to reuse the host TensorRT Python bindings, add the host path to the environment:
+If the Conda environment needs to reuse the host TensorRT Python bindings:
 
 ```bash
 echo /usr/lib/python3.12/dist-packages > ~/miniforge3/envs/trtllm/lib/python3.12/site-packages/system-tensorrt.pth
 ```
 
-To inspect a new Blackwell/Thor machine:
-
-```bash
-chmod +x scripts/check_blackwell_env.sh
-./scripts/check_blackwell_env.sh | tee blackwell_env_check.txt
-```
-
-To install the Python-side dependencies inside a fresh conda environment:
+To install Python-side dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-This installs only the Python packages used by the repository scripts. It does not install the required host-level CUDA, TensorRT, Nsight, or compiler toolchain components.
-
-For gated Llama or NVIDIA quantized checkpoints, authenticate with Hugging Face first:
+For gated Llama checkpoints:
 
 ```bash
 huggingface-cli login
 ```
 
-## Model Choices
+## Why TensorRT Edge-LLM
 
-Recommended initial model:
+On Thor, the regular TensorRT-LLM Python LLM path was not the stable choice for this project. TensorRT Edge-LLM successfully supported the export/build/run flow we needed for FP16 and NVFP4 experiments, including stage-level and kernel-level profiling.
 
-```text
-FP16/BF16 baseline: meta-llama/Llama-3.1-8B-Instruct
-FP8 target: optional Edge-LLM/ModelOpt export path
-NVFP4 target: Edge-LLM/ModelOpt export path
-```
-
-Llama 3.1 8B is small enough to iterate on a single device while still exercising realistic transformer inference behavior: prefill attention, autoregressive decode, KV-cache updates, MLP GEMMs, fused normalization/cast kernels, and sampling overhead.
-
-## TensorRT Edge-LLM on Thor
-
-On NVIDIA Thor, use TensorRT Edge-LLM instead of the regular TensorRT-LLM Python LLM API. The standard TensorRT-LLM Python API hit unsupported fused-attention kernels on the target system, while Edge-LLM successfully built and ran FP16 and NVFP4 engines.
-
-The Edge-LLM flow is:
+The effective workflow is:
 
 ```text
-Hugging Face model -> quantize/export ONNX -> build TensorRT engine on Thor -> run C++ inference on Thor
+Hugging Face model
+-> quantize/export to Edge-LLM ONNX
+-> build TensorRT engine on Thor
+-> run C++ inference on Thor
+-> profile with Nsight Systems / Nsight Compute
 ```
+
+## Current Experiment Structure
+
+### Llama 3.1 8B
+
+- `baseline`: moderate prompt length
+- `longctx`: long prompt / large KV-cache regime
+- `exlongctx`: extra-long prompt regime used to study more severe context growth
+
+This model is used primarily to study how bottlenecks move as context increases.
+
+### Qwen2.5-14B
+
+- `baseline`: moderate prompt length
+- `longctx`: long prompt regime
+
+This model is used primarily for cross-model comparison and to test whether the FP16-to-NVFP4 speedup pattern remains similar across model families.
+
+## Local Edge-LLM Modifications
+
+In addition to the normal TensorRT Edge-LLM flow, this project used a few local modifications for profiling and extra-long input support:
+
+1. **NVTX decode instrumentation**
+   - Added additional NVTX ranges around decode forward and decode sampling.
+   - This makes Nsight Systems and Nsight Compute filtering cleaner for stage-level analysis.
+
+2. **CUDA graph node tracing in `nsys`**
+   - `scripts/edgellm_run_device.sh` adds:
+
+   ```text
+   --cuda-graph-trace=node
+   ```
+
+   - This improves visibility into decode-stage GEMM and related graph nodes in Nsight Systems.
+
+3. **Expanded JSON message content limit**
+   - `patches/tensorrt-edgellm-input-limit-512k.patch` raises:
+
+   ```cpp
+   constexpr size_t kMaxMessageContentSizeBytes
+   ```
+
+   from `128 * 1024` to `512 * 1024`.
+
+   - This is required for the extra-long prompt experiments, where the input JSON payload itself becomes very large.
+
+## Export, Build, and Run
 
 Check the device:
 
 ```bash
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_check_device.sh
+CONFIG=configs/edgellm_llama31_8b_baseline.yaml ./scripts/edgellm_check_device.sh
 ```
 
-Export on the machine where the Edge-LLM Python export tools are available:
+Export a model:
 
 ```bash
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_host.sh fp16
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_host.sh fp8
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_export_host.sh nvfp4
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_export_host.sh fp16
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_export_host.sh nvfp4
 ```
 
-Build and run on Thor:
+Build the engine:
 
 ```bash
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_build_device.sh fp16
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_run_device.sh fp16
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_build_device.sh fp16
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_build_device.sh nvfp4
 ```
 
-Repeat the build/run commands for `fp8` and `nvfp4` after export succeeds.
-
-## Edge-LLM NVTX Instrumentation
-
-For cleaner prefill/decode separation, enable Edge-LLM's NVTX profiling path and apply the local instrumentation patch:
+Run inference:
 
 ```bash
-CONFIG=configs/edgellm_llama31_8b_precision_sweep.yaml ./scripts/edgellm_enable_nvtx_device.sh
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_run_device.sh fp16
+CONFIG=configs/edgellm_qwen25_14b_baseline.yaml ./scripts/edgellm_run_device.sh nvfp4
 ```
 
-The runtime patch is stored in:
+The same pattern applies to:
 
-```text
-patches/tensorrt-edgellm-nvtx-decode-ranges.patch
-```
-
-The patch records our local Edge-LLM changes:
-
-- add `LLM_DECODE_FORWARD[...]` around decode model-forward enqueue;
-- add `LLM_DECODE_SAMPLING[...]` around topK/sampling and token bookkeeping;
-- add a small NVTX color-definition fix needed by the current Edge-LLM source.
-
-These labels are used for profiling and are not intended to change model outputs.
+- `configs/edgellm_llama31_8b_baseline.yaml`
+- `configs/edgellm_llama31_8b_longctx.yaml`
+- `configs/edgellm_llama31_8b_exlongctx.yaml`
+- `configs/edgellm_qwen25_14b_longctx.yaml`
 
 ## Profiling
 
-Nsight Systems captures the full timeline:
+### Nsight Systems
+
+Nsight Systems is used to measure:
+
+- `LLM_PREFILL`
+- `LLM_GENERATION`
+- `Decode_Iter`
+
+Example:
 
 ```bash
-PROFILE=nsys PROFILE_TAG=full CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
+PROFILE=nsys PROFILE_TAG=full CONFIG=configs/edgellm_qwen25_14b_baseline.yaml \
   ./scripts/edgellm_run_device.sh fp16
 ```
 
-Nsight Compute captures detailed kernel metrics. The trailing `/` in `NCU_NVTX_INCLUDE` is required because Edge-LLM emits push/pop NVTX ranges.
-
-Prefill:
+The resulting `.sqlite` files can be queried with:
 
 ```bash
-nohup env PROFILE=ncu PROFILE_TAG=prefill NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_PREFILL.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
-  ./scripts/edgellm_run_device.sh fp16 \
-  > results/fp16_longctx_prefill_ncu_full_nvtx.log 2>&1 &
+python scripts/query_nsys_sqlite.py <trace.sqlite>
 ```
 
-Decode forward:
+### Nsight Compute
+
+Nsight Compute is used to inspect kernel-level behavior in:
+
+- **prefill**
+- **decode iteration**
+
+We filter NCU collection using NVTX ranges so that prefill and decode can be analyzed separately.
+
+Example prefill run:
 
 ```bash
-nohup env PROFILE=ncu PROFILE_TAG=decodeforward NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_DECODE_FORWARD.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
-  ./scripts/edgellm_run_device.sh fp16 \
-  > results/fp16_longctx_decodeforward_ncu_full_nvtx.log 2>&1 &
+nohup env PROFILE=ncu PROFILE_TAG=prefill NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_PREFILL.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=50 CONFIG=configs/edgellm_qwen25_14b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh nvfp4 \
+  > results/qwen25_14b_longctx_nvfp4_prefill_ncu.log 2>&1 &
 ```
 
-Sampling overhead:
+Example decode run:
 
 ```bash
-nohup env PROFILE=ncu PROFILE_TAG=decodesampling NCU_SET=full NCU_NVTX_INCLUDE='regex:LLM_DECODE_SAMPLING.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=20 CONFIG=configs/edgellm_llama31_8b_longctx.yaml \
-  ./scripts/edgellm_run_device.sh fp16 \
-  > results/fp16_longctx_decodesampling_ncu_full_nvtx.log 2>&1 &
+nohup env PROFILE=ncu PROFILE_TAG=decodeiter NCU_SET=full NCU_NVTX_INCLUDE='regex:Decode_Iter.*/' NCU_LAUNCH_SKIP=0 NCU_LAUNCH_COUNT=100 CONFIG=configs/edgellm_qwen25_14b_longctx.yaml \
+  ./scripts/edgellm_run_device.sh nvfp4 \
+  > results/qwen25_14b_longctx_nvfp4_decodeiter_ncu.log 2>&1 &
 ```
 
-Important interpretation note: TensorRT Edge-LLM uses CUDA graph execution and stream synchronization, so CPU-side NVTX wall time can include asynchronous enqueue and synchronization effects. Use Nsight Systems for stage/timeline structure and Nsight Compute for kernel-level bottleneck analysis.
+## What We Compare
 
-## TensorRT-LLM Python API Fallback
+The project is designed around **bottleneck shift**, not only total speedup.
 
-The original TensorRT-LLM Python benchmark path is still available for non-Thor systems or smoke tests:
+The main comparisons are:
 
-```bash
-python scripts/run_precision_sweep.py --config configs/llama31_8b_precision_sweep.yaml
-```
+- **FP16 vs NVFP4** under the same workload
+- **baseline vs long-context / extra-long-context** within the same model
+- **Llama 3.1 8B vs Qwen2.5-14B** under comparable baseline and long-context conditions
 
-Results are written as JSONL:
+At the kernel level, the most important categories are:
 
-```text
-results/llama31_8b_precision_sweep.jsonl
-```
+- GEMM / fused GEMM kernels
+- FMHA / attention kernels
+- KV-update kernels such as `applyRopeWriteKV`
+- memory-movement or layout kernels such as cast / reshape / move kernels
 
-Each row records precision, model, backend, batch size, prompt/output token estimates, latency, throughput, and peak GPU memory.
+This allows the study to answer not only whether NVFP4 is faster, but also:
 
-The Transformers fallback config can be used for a simple FP16 sanity check:
-
-```bash
-python scripts/run_precision_sweep.py --config configs/llama31_8b_transformers_smoke.yaml
-```
-
-## What to Compare
-
-The main evaluation compares FP16 and NVFP4 under the same long-context workload:
-
-- dominant kernel categories in prefill and decode;
-- Tensor Core/GEMM utilization;
-- DRAM/L2/L1 throughput;
-- roofline position;
-- scheduler and warp stall reasons;
-- whether non-GEMM kernels such as KV-cache update, RoPE, fused cast/norm, quantization, or sampling become more visible after precision reduction.
-
-The expected research question is not only whether NVFP4 is faster, but whether it shifts the bottleneck differently in prefill and decode.
+- whether GEMM remains dominant after precision reduction
+- whether attention becomes more important as context increases
+- whether speedup drops in extra-long-context regimes where KV-cache traffic matters more
 
 ## Notes
 
-- NVFP4 is a Blackwell-oriented format; unsupported devices should be expected to fail or skip NVFP4 paths.
-- FP8 is useful as an intermediate precision comparison, but the Edge-LLM FP8 export path may require additional memory/toolchain work.
-- Llama 3.3 70B FP16 typically requires multi-GPU tensor parallelism; Llama 3.1 8B is the recommended first-pass model for pipeline validation.
+- NVFP4 is a Blackwell-oriented precision mode; unsupported devices should be expected to fail or skip NVFP4 paths.
+- TensorRT Edge-LLM clearly exposes **FP8 KV-cache** support in its own codebase, but our current experiments do not enable a dedicated low-precision KV-cache mode. Our current NVFP4 results therefore mainly reflect acceleration of the dominant low-precision compute path rather than a separately quantized NVFP4 KV cache.
+- Extra-long-context experiments may require both:
+  - a larger `max_input_len` / `max_kv_cache_capacity` build configuration
+  - the local `inputLimits.h` patch recorded in `patches/tensorrt-edgellm-input-limit-512k.patch`
